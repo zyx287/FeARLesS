@@ -18,60 +18,95 @@ reconstruction and smoothing.
 
 ## 1. Preparing the input data
 
-`prepare_nucleus_data.py` converts the original meshes to `.vtk` surfaces and,
-optionally, to signed-distance volumes that can be re-used by the original
-FeARLesS scripts.
+`prepare_nucleus_data.py` converts the original meshes to `.vtp` surfaces and,
+optionally, to `.vti` signed-distance volumes that can be re-used by the original
+FeARLesS scripts. Like the modelling driver, it uses an editable configuration
+block so you can simply point it at your nucleus folder.
 
-```bash
-python nucleus/prepare_nucleus_data.py <ply-input-folder> \
-    --surface-output nucleus_data/surfaces \
-    --volume-output nucleus_data/volumes \
-    --sample-size 160 160 160 \
-    --padding 1.15 \
-    --invert-normals    # optional, flip the signed distance convention
+```python
+# nucleus/prepare_nucleus_data.py
+PREPARATION_CONFIG = PreparationConfig(
+    input_dir=Path("/absolute/path/to/nuclei"),
+    surface_output=Path("nucleus_data/surfaces"),
+    volume_output=Path("nucleus_data/volumes"),
+    file_suffix="_nuclei.ply",        # match files such as cellid_s1_nuclei.ply
+    dims=(160, 160, 160),
+    padding=1.15,
+    invert_normals=False,
+    overwrite=False,
+    skip_surfaces=False,
+    skip_volumes=False,
+)
 ```
 
-### Parameters
+Run the conversion with:
 
-- `input_dir`: folder containing the `.ply` meshes.
-- `--surface-output`: where to store the converted `.vtk` surfaces (default:
-  `nucleus_data/surfaces`).
-- `--volume-output`: destination for the generated signed-distance volumes
-  (default: `nucleus_data/volumes`).
-- `--sample-size`: number of voxels along each axis when creating volumes.
-- `--padding`: padding factor applied to the shared bounding box before voxelising.
-- `--invert-normals`: invert the sign of the resulting signed distance field.
-- `--overwrite`: replace existing output directories instead of aborting.
-- `--skip-surfaces` / `--skip-volumes`: disable either export step.
+```bash
+python nucleus/prepare_nucleus_data.py
+```
 
-Metadata about the processed meshes, bounding box, and grid resolution are saved
-next to the exported assets (`metadata.json`).
+### Parameters to consider
+
+- **`input_dir`** – the folder containing the original `.ply` nuclei meshes.
+  The default `file_suffix` of `_nuclei.ply` matches files named like
+  `cellid_s1_nuclei.ply`; adjust it if your naming scheme differs.
+- **`surface_output` / `volume_output`** – locations where converted `.vtp`
+  surfaces and `.vti` signed-distance volumes will be written. Each directory
+  receives a `metadata.json` summary with the input file order, bounding box,
+  and voxel grid size.
+- **`dims`** – number of voxels `(nx, ny, nz)` used when voxelising the meshes.
+  Higher numbers increase fidelity at the cost of larger files and processing
+  time.
+- **`padding`** – scale factor applied to the shared bounding box of all meshes.
+  Increase it if volumes clip the shape; decrease it to tighten the frame.
+- **`invert_normals`** – flip this to `True` when your PLY files are oriented so
+  the inside of the nucleus is labelled with positive distance.
+- **`overwrite`** – toggle to `True` to replace existing output folders.
+- **`skip_surfaces` / `skip_volumes`** – set either to `True` if you only need
+  surfaces or volumes.
 
 ## 2. Running the modelling
 
-`run_nucleus_modeling.py` mirrors the FeARLesS pipeline while exposing explicit
-parameters through an editable configuration block at the top of the script.
+`run_nucleus_modeling.py` mirrors the four scripts in the original FeARLesS
+pipeline.  Each stage can be toggled on/off through an editable configuration
+block at the top of the file and the generated folders follow the familiar
+`pureSPharm`, `makeVoxel`, `computeAllIntesities`, and `morphing` naming
+convention.
+
 Update the ``CONFIG`` definition to point at your meshes, tweak the numerical
-settings, and then execute the module:
+settings, choose which stages to execute, and then run the module:
 
 ```python
 # nucleus/run_nucleus_modeling.py
-CONFIG = ModelingConfig(
+CONFIG = PipelineConfig(
     mesh_dir=Path("nucleus_data/surfaces"),
-    pattern="*.vtk",
-    times=None,              # list of time values matching the mesh order
-    lmax=40,                 # maximum spherical-harmonics degree
-    samples=400,             # angular samples for the ray casting grid
-    fit_degree=4,            # polynomial degree for temporal interpolation
-    interpolation_steps=15,  # number of reconstructed time points (None keeps originals)
-    surface_resolution=150,  # marching cubes grid resolution
-    smooth_iterations=20,    # smoothing iterations for reconstructed meshes
-    overwrite=False,         # set True to replace existing outputs
-    export_surfaces=True,    # write reconstructed surfaces as .vtk
-    export_points=False,     # write intermediate point clouds as .vtp
-    output_dir=Path("nucleus_results"),
+    pattern=("*.vtp", "*.vtk"),
+    times=None,                    # list of time values matching the mesh order
+    run_make_voxel=True,           # export signed-distance volumes (makeVoxel)
+    run_pure_spharm=True,          # compute CLMs and radial samples (pureSPharm)
+    run_compute_all_intensities=True,  # save stacked radial intensities
+    run_morphing=True,             # interpolate CLMs and reconstruct meshes
+    volume_dims=(160, 160, 160),   # voxel grid resolution for makeVoxel
+    volume_padding=1.15,           # padding factor for the shared bounding box
+    invert_normals=False,          # flip signed distance convention when needed
+    lmax=40,                       # maximum spherical-harmonics degree
+    sphere_samples=400,            # angular samples for the ray casting grid
+    radius_samples=120,            # depth samples per ray (computeAllIntesities)
+    fit_degree=4,                  # polynomial degree for temporal interpolation
+    interpolation_steps=15,        # # of reconstructed time points (None keeps originals)
+    surface_resolution=150,        # reconstruction grid resolution
+    smooth_iterations=20,          # smoothing iterations for reconstructed meshes
+    export_surfaces=True,          # write reconstructed surfaces as .vtk
+    export_points=False,           # write intermediate point clouds as .vtp
+    overwrite=False,               # set True to replace existing outputs
+    output_root=Path("nucleus_results"),
 )
 ```
+
+If you used the preparation script as-is, point `mesh_dir` to the aligned
+surface folder (e.g., `nucleus_data/surfaces_aligned`). The default pattern
+matches the `.vtp` files created by the preparation stage while still accepting
+legacy `.vtk` surfaces.
 
 Run the reconstruction with:
 
@@ -79,17 +114,32 @@ Run the reconstruction with:
 python nucleus/run_nucleus_modeling.py
 ```
 
-### Outputs
+### Stage-by-stage outputs
 
-Running the modelling script produces the following artefacts inside the chosen
-``CONFIG.output_dir``:
+Running the script generates folders that correspond to the original FeARLesS
+programs:
 
-- `coefficients.npy`: interpolated spherical-harmonics coefficients.
-- `metadata.json`: configuration, input filenames, and derived parameters
-  (`rmax`, time points, interpolation targets, etc.).
-- `surfaces/`: reconstructed meshes (when `CONFIG.export_surfaces` is enabled).
-- `point_clouds/`: point clouds used to build each surface (when
-  `CONFIG.export_points` is enabled).
+1. **pureSPharm** (`pure_spharm-lmax.../`)
+   - `coefficients.npy`: spherical-harmonic coefficients for each mesh.
+   - `radial_grids.npy`: sampled radial distances per polar/azimuthal angle,
+     used to synthesise intensity stacks for the next step.
+   - `times.npy` and `metadata.json`: timing information and capture settings.
 
-These assets can be re-used with the original FeARLesS post-processing scripts
-or further analysed using standard 3D tooling.
+2. **makeVoxel** (`TIF-signedDist_sampleSize.../`)
+   - Signed-distance volumes exported as `ReferenceShape_<mesh>.vti`.
+   - Shared bounding box metadata (`metadata.json`).
+
+3. **computeAllIntesities** (`allIntensities-sampleSize.../`)
+   - `allIntensities.npy`: a depth stack derived from the radial grids above.
+     Each ray stores both a scaled and absolute distance profile to remain
+     compatible with routines expecting the limb-bud format.
+
+4. **morphing** (`CLM/...` and `morphing_sampleSize.../`)
+   - `allClmMatrix.npy` and `allClmSpline.npy`: raw and interpolated CLM
+     tensors ready for downstream analysis.
+   - `metadata.json`: reconstruction parameters and paths.
+   - `surfaces/` and `point_clouds/`: reconstructed meshes and supporting point
+     clouds when the respective export flags are enabled.
+
+The root folder (`nucleus_results/` by default) also contains
+`pipeline_summary.json` listing the location of every generated artefact.
